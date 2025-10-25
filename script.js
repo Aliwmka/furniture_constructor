@@ -161,6 +161,7 @@ class FurnitureConstructor {
                     transparent: true,
                     opacity: 0.6
                 });
+                element.mesh = new THREE.Mesh(geometry, material);
                 break;
                 
             case 'shelf-vertical':
@@ -170,24 +171,79 @@ class FurnitureConstructor {
                     transparent: true,
                     opacity: 0.6
                 });
+                element.mesh = new THREE.Mesh(geometry, material);
                 break;
                 
             case 'drawer':
+                // Для превью используем упрощенный прямоугольник
                 geometry = new THREE.BoxGeometry(0.5, 0.15, this.cabinetParams.depth * 0.7);
                 material = new THREE.MeshLambertMaterial({ 
                     color: 0x00ff00,
                     transparent: true,
                     opacity: 0.6
                 });
+                element.mesh = new THREE.Mesh(geometry, material);
                 break;
         }
         
-        element.mesh = new THREE.Mesh(geometry, material);
         element.mesh.position.set(0, this.cabinetParams.height / 2, 0);
         element.mesh.visible = true;
         
         this.scene.add(element.mesh);
         return element;
+    }
+    
+    // Создание ящика как внутреннего короба с передней стенкой
+    createDrawerBox(width, height, depth) {
+        const drawerGroup = new THREE.Group();
+        const thickness = 0.01; // Толщина материала
+        
+        // Материалы для ящика
+        const drawerMaterial = new THREE.MeshLambertMaterial({ color: 0xD2B48C }); // Цвет для ящика
+        
+        // Боковые стенки ящика
+        const sideHeight = height;
+        const sideDepth = depth;
+        
+        const leftSide = new THREE.Mesh(
+            new THREE.BoxGeometry(thickness, sideHeight, sideDepth),
+            drawerMaterial
+        );
+        leftSide.position.x = -width / 2 + thickness / 2;
+        drawerGroup.add(leftSide);
+        
+        const rightSide = new THREE.Mesh(
+            new THREE.BoxGeometry(thickness, sideHeight, sideDepth),
+            drawerMaterial
+        );
+        rightSide.position.x = width / 2 - thickness / 2;
+        drawerGroup.add(rightSide);
+        
+        // Задняя стенка ящика
+        const backPanel = new THREE.Mesh(
+            new THREE.BoxGeometry(width - thickness * 2, sideHeight, thickness),
+            drawerMaterial
+        );
+        backPanel.position.z = -depth / 2 + thickness / 2;
+        drawerGroup.add(backPanel);
+        
+        // Передняя стенка ящика
+        const frontPanel = new THREE.Mesh(
+            new THREE.BoxGeometry(width - thickness * 2, sideHeight, thickness),
+            drawerMaterial
+        );
+        frontPanel.position.z = depth / 2 - thickness / 2;
+        drawerGroup.add(frontPanel);
+        
+        // Дно ящика
+        const bottom = new THREE.Mesh(
+            new THREE.BoxGeometry(width - thickness * 2, thickness, depth - thickness),
+            drawerMaterial
+        );
+        bottom.position.y = -height / 2 + thickness / 2;
+        drawerGroup.add(bottom);
+        
+        return drawerGroup;
     }
     
     // Расчет размеров нового элемента с учетом существующих элементов - БЕЗ ЗАЗОРОВ
@@ -516,7 +572,7 @@ class FurnitureConstructor {
         return position;
     }
     
-    // УПРОЩЕННАЯ проверка - всегда разрешает размещение
+    // УЛУЧШЕННАЯ проверка - проверяет коллизии между горизонтальными элементами
     isValidPosition(position) {
         if (!this.cabinet) return false;
         
@@ -533,7 +589,43 @@ class FurnitureConstructor {
             }
         }
         
-        // УБРАНА ПРОВЕРКА КОЛЛИЗИЙ - разрешаем размещение всегда
+        // НОВАЯ ПРОВЕРКА: проверка коллизий между горизонтальными элементами и ящиками
+        if (this.draggingElement.type === 'shelf-horizontal' || this.draggingElement.type === 'drawer') {
+            const elementSize = new THREE.Vector3();
+            const elementBox = new THREE.Box3().setFromObject(this.draggingElement.mesh);
+            elementBox.getSize(elementSize);
+            
+            // Проверяем пересечение с существующими горизонтальными элементами
+            for (const element of this.elements) {
+                if (element.type === 'shelf-horizontal' || element.type === 'drawer') {
+                    const existingSize = new THREE.Vector3();
+                    const existingBox = new THREE.Box3().setFromObject(element.mesh);
+                    existingBox.getSize(existingSize);
+                    
+                    // Вычисляем границы текущего элемента
+                    const currentMinX = position.x - elementSize.x / 2;
+                    const currentMaxX = position.x + elementSize.x / 2;
+                    const currentMinY = position.y - elementSize.y / 2;
+                    const currentMaxY = position.y + elementSize.y / 2;
+                    
+                    // Вычисляем границы существующего элемента
+                    const existingMinX = element.mesh.position.x - existingSize.x / 2;
+                    const existingMaxX = element.mesh.position.x + existingSize.x / 2;
+                    const existingMinY = element.mesh.position.y - existingSize.y / 2;
+                    const existingMaxY = element.mesh.position.y + existingSize.y / 2;
+                    
+                    // Проверяем пересечение по осям X и Y
+                    const xOverlap = currentMinX < existingMaxX && currentMaxX > existingMinX;
+                    const yOverlap = currentMinY < existingMaxY && currentMaxY > existingMinY;
+                    
+                    // Если есть пересечение по обеим осям, это коллизия
+                    if (xOverlap && yOverlap) {
+                        return false;
+                    }
+                }
+            }
+        }
+        
         return true;
     }
     
@@ -600,7 +692,7 @@ class FurnitureConstructor {
                 
                 this.updateStatus(isValid ? 
                     'Отпустите кнопку мыши чтобы разместить элемент' : 
-                    'Невозможно разместить здесь - недостаточно места');
+                    'Невозможно разместить здесь - недостаточно места или пересечение с другим элементом');
             }
         }
     }
@@ -647,29 +739,52 @@ class FurnitureConstructor {
         
         let geometry, material;
         
-        // Используем текущие размеры из превью
-        geometry = new THREE.BoxGeometry(
-            currentDimensions.width,
-            currentDimensions.height,
-            currentDimensions.depth
-        );
-        
         switch(finalElement.type) {
             case 'shelf-horizontal':
+                geometry = new THREE.BoxGeometry(
+                    currentDimensions.width,
+                    currentDimensions.height,
+                    currentDimensions.depth
+                );
                 material = new THREE.MeshLambertMaterial({ color: 0xDEB887 });
+                finalElement.mesh = new THREE.Mesh(geometry, material);
                 break;
+                
             case 'shelf-vertical':
+                geometry = new THREE.BoxGeometry(
+                    currentDimensions.width,
+                    currentDimensions.height,
+                    currentDimensions.depth
+                );
                 material = new THREE.MeshLambertMaterial({ color: 0xDEB887 });
+                finalElement.mesh = new THREE.Mesh(geometry, material);
                 break;
+                
             case 'drawer':
-                material = new THREE.MeshLambertMaterial({ color: 0xF5F5DC });
+                // Создаем ящик как внутренний короб с передней стенкой
+                finalElement.mesh = this.createDrawerBox(
+                    currentDimensions.width,
+                    currentDimensions.height,
+                    currentDimensions.depth
+                );
                 break;
         }
         
-        finalElement.mesh = new THREE.Mesh(geometry, material);
-        finalElement.mesh.position.copy(finalPosition);
-        finalElement.mesh.castShadow = true;
-        finalElement.mesh.receiveShadow = true;
+        if (finalElement.type !== 'drawer') {
+            finalElement.mesh.position.copy(finalPosition);
+            finalElement.mesh.castShadow = true;
+            finalElement.mesh.receiveShadow = true;
+        } else {
+            // Для ящика позиционируем группу
+            finalElement.mesh.position.copy(finalPosition);
+            // Включаем тени для всех дочерних элементов ящика
+            finalElement.mesh.traverse((child) => {
+                if (child.isMesh) {
+                    child.castShadow = true;
+                    child.receiveShadow = true;
+                }
+            });
+        }
         
         this.scene.add(finalElement.mesh);
         this.elements.push(finalElement);
